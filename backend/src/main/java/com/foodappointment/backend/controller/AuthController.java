@@ -1,4 +1,5 @@
 package com.foodappointment.backend.controller;
+import jakarta.validation.Valid;
 
 import com.foodappointment.backend.dto.LoginRequest;
 import com.foodappointment.backend.dto.RegisterRequest;
@@ -38,7 +39,7 @@ public class AuthController {
 
     @PostMapping("/register")
     public ResponseEntity<?> register(
-            @RequestBody RegisterRequest request) {
+        @Valid @RequestBody RegisterRequest request) {
 
         if (userRepository.existsByEmail(
                 request.getEmail())) {
@@ -70,7 +71,7 @@ public class AuthController {
 
     @PostMapping("/register-owner")
     public ResponseEntity<?> registerOwner(
-            @RequestBody RegisterOwnerRequest request) {
+        @Valid @RequestBody RegisterOwnerRequest request) {
     
         // Check email
         if (userRepository.existsByEmail(request.getEmail())) {

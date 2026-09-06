@@ -5,14 +5,13 @@ import com.razorpay.Order;
 import com.razorpay.RazorpayClient;
 
 import com.foodappointment.backend.entity.Booking;
+import com.foodappointment.backend.entity.Payment;
 import com.foodappointment.backend.repository.BookingRepository;
+import com.foodappointment.backend.repository.PaymentRepository;
 
 import org.json.JSONObject;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
-
-import com.foodappointment.backend.entity.Payment;
-import com.foodappointment.backend.repository.PaymentRepository;
 
 @Service
 public class PaymentService {
@@ -27,41 +26,52 @@ public class PaymentService {
     @Value("${razorpay.key.secret}")
     private String keySecret;
 
-
-    // Constructor
     public PaymentService(
-        BookingRepository bookingRepository,
-        PaymentRepository paymentRepository,
-        EmailService emailService) {
+            BookingRepository bookingRepository,
+            PaymentRepository paymentRepository,
+            EmailService emailService) {
 
-    this.bookingRepository = bookingRepository;
-    this.paymentRepository = paymentRepository;
-    this.emailService = emailService;
-}
+        this.bookingRepository = bookingRepository;
+        this.paymentRepository = paymentRepository;
+        this.emailService = emailService;
+    }
 
     // Create Razorpay Order using Booking ID
-    public String createOrder(Long bookingId) throws Exception {
+    public String createOrder(
+            Long bookingId,
+            String customerEmail) throws Exception {
 
-        // Find booking from database
+        // Find booking
         Booking booking = bookingRepository
                 .findById(bookingId)
                 .orElseThrow(() ->
-                        new RuntimeException("Booking not found"));
+                        new RuntimeException(
+                                "Booking not found"
+                        )
+                );
 
+        // Ownership check
+        if (booking.getCustomerEmail() == null ||
+                !booking.getCustomerEmail()
+                        .equalsIgnoreCase(customerEmail)) {
 
-        // Payment should be created only for pending booking
-        if (!"PENDING_PAYMENT".equals(booking.getStatus())) {
+            throw new RuntimeException(
+                    "You cannot create payment for this booking"
+            );
+        }
+
+        // Payment only for pending booking
+        if (!"PENDING_PAYMENT"
+                .equalsIgnoreCase(booking.getStatus())) {
 
             throw new RuntimeException(
                     "Booking is not available for payment"
             );
         }
 
-
-        // Get 25% advance amount from database
+        // Get advance amount from database
         double advanceAmount =
                 booking.getAdvanceAmount();
-
 
         // Create Razorpay client
         RazorpayClient razorpayClient =
@@ -70,13 +80,11 @@ public class PaymentService {
                         keySecret
                 );
 
-
         // Convert rupees to paise
         int amountInPaise =
                 (int) Math.round(
                         advanceAmount * 100
                 );
-
 
         // Create Razorpay order request
         JSONObject orderRequest =
@@ -97,70 +105,124 @@ public class PaymentService {
                 "booking_" + bookingId
         );
 
-
-        // Create order
+        // Create Razorpay order
         Order order =
-        razorpayClient.orders.create(orderRequest);
+                razorpayClient.orders.create(
+                        orderRequest
+                );
 
-        // Save Razorpay Order ID in Booking
-        booking.setRazorpayOrderId(order.get("id"));
-        
+        // Save Razorpay Order ID
+        booking.setRazorpayOrderId(
+                order.get("id")
+        );
+
         bookingRepository.save(booking);
+
         // Return Razorpay order response
-       return order.toString();
+        return order.toString();
     }
 
 
     // Verify Razorpay Payment Signature
     public boolean verifyAndSavePayment(
-        String paymentId,
-        String orderId,
-        String signature
-) throws Exception {
+            String paymentId,
+            String orderId,
+            String signature,
+            String customerEmail) throws Exception {
 
-    String payload = orderId + "|" + paymentId;
+        // Basic input validation
+        if (paymentId == null ||
+                paymentId.isBlank() ||
+                orderId == null ||
+                orderId.isBlank() ||
+                signature == null ||
+                signature.isBlank()) {
 
-    boolean verified = Utils.verifySignature(
-            payload,
-            signature,
-            keySecret
-    );
-
-    if (!verified) {
-        return false;
-    }
-
-    Booking booking = bookingRepository
-            .findByRazorpayOrderId(orderId)
-            .orElseThrow(() ->
-                    new RuntimeException(
-                            "Booking not found for this order"
-                    )
+            throw new RuntimeException(
+                    "Invalid payment details"
             );
+        }
 
-    if (!"PENDING_PAYMENT".equals(booking.getStatus())) {
-        throw new RuntimeException(
-                "Booking is not pending payment"
+        // Verify Razorpay signature
+        String payload =
+                orderId + "|" + paymentId;
+
+        boolean verified =
+                Utils.verifySignature(
+                        payload,
+                        signature,
+                        keySecret
+                );
+
+        if (!verified) {
+            return false;
+        }
+
+        // Find booking using Razorpay Order ID
+        Booking booking =
+                bookingRepository
+                        .findByRazorpayOrderId(orderId)
+                        .orElseThrow(() ->
+                                new RuntimeException(
+                                        "Booking not found for this order"
+                                )
+                        );
+
+        // Ownership check
+        if (booking.getCustomerEmail() == null ||
+                !booking.getCustomerEmail()
+                        .equalsIgnoreCase(customerEmail)) {
+
+            throw new RuntimeException(
+                    "You cannot verify payment for this booking"
+            );
+        }
+
+        // Booking must still be pending payment
+        if (!"PENDING_PAYMENT"
+                .equalsIgnoreCase(booking.getStatus())) {
+
+            throw new RuntimeException(
+                    "Booking is not pending payment"
+            );
+        }
+
+        // Prevent duplicate payment record
+        if (paymentRepository
+                .existsByRazorpayPaymentId(paymentId)) {
+
+            throw new RuntimeException(
+                    "Payment has already been processed"
+            );
+        }
+
+        // Create payment record
+        Payment payment = new Payment();
+
+        payment.setBooking(booking);
+        payment.setRazorpayOrderId(orderId);
+        payment.setRazorpayPaymentId(paymentId);
+        payment.setRazorpaySignature(signature);
+
+        // Amount comes from database
+        payment.setAmount(
+                booking.getAdvanceAmount()
         );
+
+        payment.setStatus("SUCCESS");
+
+        paymentRepository.save(payment);
+
+        // Confirm booking
+        booking.setStatus("CONFIRMED");
+
+        bookingRepository.save(booking);
+
+        // Send confirmation email
+        emailService.sendBookingConfirmation(
+                booking
+        );
+
+        return true;
     }
-
-    Payment payment = new Payment();
-
-    payment.setBooking(booking);
-    payment.setRazorpayOrderId(orderId);
-    payment.setRazorpayPaymentId(paymentId);
-    payment.setRazorpaySignature(signature);
-    payment.setAmount(booking.getAdvanceAmount());
-    payment.setStatus("SUCCESS");
-
-    paymentRepository.save(payment);
-
-    booking.setStatus("CONFIRMED");
-
-    bookingRepository.save(booking);
-
-    emailService.sendBookingConfirmation(booking);
-
-    return true;
-  }
 }

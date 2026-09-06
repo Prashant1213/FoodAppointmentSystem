@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { useParams, useNavigate } from 'react-router-dom'
 import api from '../axios'
 
 function BookingDetails() {
 
   const { id } = useParams()
+  const navigate = useNavigate()
 
   const [booking, setBooking] = useState(null)
   const [items, setItems] = useState([])
@@ -41,6 +42,88 @@ function BookingDetails() {
     fetchDetails()
 
   }, [id])
+
+  const handlePayment = async () => {
+
+  try {
+    // 1. Create Razorpay Order
+    const orderResponse =
+      await api.post(`/api/payment/create-order/${id}`)
+
+    const order = orderResponse.data
+
+     // 2. Razorpay Checkout
+     const options = {
+ 
+       key: "rzp_test_TUllPQISglKGhL",
+ 
+       amount: order.amount,
+       currency: order.currency,
+ 
+       name: "Food Appointment System",
+       description: `Booking #${id}`,
+ 
+       order_id: order.id,
+ 
+       handler: async function (response) {
+ 
+         try {
+ 
+           // 3. Verify Payment
+           const verifyResponse =
+             await api.post(
+               "/api/payment/verify",
+               {
+                 razorpayPaymentId:
+                   response.razorpay_payment_id,
+ 
+                 razorpayOrderId:
+                   response.razorpay_order_id,
+ 
+                 razorpaySignature:
+                   response.razorpay_signature
+               }
+             )
+ 
+           alert(verifyResponse.data)
+ 
+           // 4. Reload booking details
+           const bookingResponse =
+             await api.get(`/api/bookings/${id}`)
+ 
+           setBooking(bookingResponse.data)
+ 
+         } catch (error) {
+ 
+           console.error(error)
+ 
+           alert(
+             error.response?.data ||
+             "Payment verification failed"
+           )
+         }
+       },
+ 
+       theme: {
+         color: "#0d6efd"
+       }
+     }
+ 
+     const razorpay =
+       new window.Razorpay(options)
+ 
+     razorpay.open()
+ 
+   } catch (error) {
+ 
+     console.error(error)
+ 
+     alert(
+       error.response?.data ||
+       "Unable to start payment"
+     )
+   }
+ }
 
      const handleCancel = async () => {
      const confirmCancel = window.confirm(
@@ -125,8 +208,18 @@ function BookingDetails() {
             {booking.status}
           </span>
         </p>
+
+        {booking.status === "PENDING_PAYMENT" && (
+          <button
+            className="btn btn-success mt-2 me-2"
+            onClick={handlePayment}
+          >
+            💳 Pay Now
+          </button>
+        )}
         
-        {booking.status !== "CANCELLED" && (
+        {booking.status !== "CANCELLED" && 
+         booking.status !== "COMPLETED" &&(
           <button
             className="btn btn-danger mt-2"
             onClick={handleCancel}

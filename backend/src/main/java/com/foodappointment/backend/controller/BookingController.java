@@ -1,4 +1,5 @@
 package com.foodappointment.backend.controller;
+import jakarta.validation.Valid;
 
 import com.foodappointment.backend.dto.CreateBookingRequest;
 import com.foodappointment.backend.entity.Booking;
@@ -12,6 +13,7 @@ import com.foodappointment.backend.repository.RestaurantRepository;
 
 import org.springframework.security.core.Authentication;
 import java.util.List;
+import org.springframework.security.access.prepost.PreAuthorize;
 
 import org.springframework.http.ResponseEntity;
 import org.springframework.transaction.annotation.Transactional;
@@ -41,8 +43,10 @@ public class BookingController {
 
     @PostMapping
     @Transactional
+    @PreAuthorize("hasRole('CUSTOMER')")
     public ResponseEntity<?> createBooking(
-            @RequestBody CreateBookingRequest request) {
+         @Valid @RequestBody CreateBookingRequest request,
+        Authentication authentication) {
 
         Restaurant restaurant =
                 restaurantRepository.findById(
@@ -76,6 +80,14 @@ public class BookingController {
                         .body("Menu item not found");
             }
 
+            if (menuItem.getRestaurant() == null ||
+                    !menuItem.getRestaurant().getId()
+                            .equals(restaurant.getId())) {
+            
+                return ResponseEntity.badRequest()
+                        .body("Menu item does not belong to selected restaurant");
+            }
+
             if (itemRequest.getQuantity() == null ||
                     itemRequest.getQuantity() < 1) {
 
@@ -94,7 +106,7 @@ public class BookingController {
 
         booking.setRestaurant(restaurant);
         booking.setCustomerName(request.getCustomerName());
-        booking.setCustomerEmail(request.getCustomerEmail());
+        booking.setCustomerEmail(authentication.getName());
         booking.setCustomerPhone(request.getCustomerPhone());
         booking.setBookingDate(request.getBookingDate());
         booking.setBookingTime(request.getBookingTime());
@@ -138,28 +150,59 @@ public class BookingController {
     }
 
     @GetMapping("/{id}")
-     public ResponseEntity<?> getBooking(
-        @PathVariable Long id) {
-
-    return bookingRepository.findById(id)
-            .map(ResponseEntity::ok)
-            .orElse(ResponseEntity.notFound().build());
-     }
-
-     @GetMapping("/{id}/items")
-     public ResponseEntity<?> getBookingItems(
-        @PathVariable Long id) {
-
-    if (!bookingRepository.existsById(id)) {
-        return ResponseEntity.notFound().build();
+    @PreAuthorize("hasRole('CUSTOMER')")
+    public ResponseEntity<?> getBooking(
+            @PathVariable Long id,
+            Authentication authentication) {
+    
+        Booking booking = bookingRepository
+                .findById(id)
+                .orElse(null);
+    
+        if (booking == null) {
+            return ResponseEntity.notFound().build();
+        }
+    
+        if (!booking.getCustomerEmail()
+                .equals(authentication.getName())) {
+    
+            return ResponseEntity
+                    .status(403)
+                    .body("You cannot view this booking");
+        }
+    
+        return ResponseEntity.ok(booking);
     }
 
-    return ResponseEntity.ok(
-            bookingItemRepository.findByBookingId(id)
-    );
-   }
+     @GetMapping("/{id}/items")
+     @PreAuthorize("hasRole('CUSTOMER')")
+     public ResponseEntity<?> getBookingItems(
+             @PathVariable Long id,
+             Authentication authentication) {
+     
+         Booking booking = bookingRepository
+                 .findById(id)
+                 .orElse(null);
+     
+         if (booking == null) {
+             return ResponseEntity.notFound().build();
+         }
+     
+         if (!booking.getCustomerEmail()
+                 .equals(authentication.getName())) {
+     
+             return ResponseEntity
+                     .status(403)
+                     .body("You cannot view these booking items");
+         }
+     
+         return ResponseEntity.ok(
+                 bookingItemRepository.findByBookingId(id)
+         );
+     }
 
    @GetMapping("/my")
+   @PreAuthorize("hasRole('CUSTOMER')")
    public ResponseEntity<?> getMyBookings(
            Authentication authentication) {
    
@@ -172,6 +215,7 @@ public class BookingController {
    }
 
     @PutMapping("/{id}/cancel")
+    @PreAuthorize("hasRole('CUSTOMER')")
     public ResponseEntity<?> cancelBooking(
             @PathVariable Long id,
             Authentication authentication) {
@@ -198,6 +242,12 @@ public class BookingController {
             return ResponseEntity
                     .badRequest()
                     .body("Booking is already cancelled");
+        }
+
+        if ("COMPLETED".equals(booking.getStatus())) {
+            return ResponseEntity
+                    .badRequest()
+                    .body("Completed booking cannot be cancelled");
         }
     
         booking.setStatus("CANCELLED");
